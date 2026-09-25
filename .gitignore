@@ -224,3 +224,4 @@ data_before/
 data_after/
 tiktoken_cache/
 empty_cache/
+Claude outputs/
