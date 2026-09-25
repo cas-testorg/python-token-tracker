@@ -1,96 +1,139 @@
 # python-token-tracker
-# Proof of Concept: Token Optimization Metrics Analysis
 
-This guide outlines the empirical methodology used to measure and prove token reduction inside a restricted customer environment utilizing Cursor Pro+ (built-in models).
+A small, self-contained utility for measuring the token weight of files so a
+"before" (raw) workflow can be compared against an "after" (optimized) workflow.
+It is built for repeatable A/B "value sprint" testing, where the same measurement
+has to be run identically by more than one person and the numbers have to hold up
+to scrutiny.
 
-## Methodology Overview
+## What this measures, and what it does not
 
-Because Cursor Pro+ encrypts and routes all traffic directly to its proprietary backend, traditional API intercept proxies (like Helicone or Langfuse) cannot trace the network payloads. Instead, this PoC utilizes a **Static Payload Delta Analysis** using a local Python script (`tiktoken`) to evaluate the exact data footprint before and after applying our product.
+Be precise about this up front, because it is the first thing a technical
+reviewer will ask.
 
----
+This tool counts the tokens in the text you point it at, using a local tokenizer
+(tiktoken). That is a payload-size measurement. It is useful for showing how much
+smaller a payload becomes after optimization.
 
-## Step 4: Baseline the "Before" Workflow State
+It does not read Cursor's own usage records, and it does not include the system
+prompt, tool schemas, injected codebase context, or conversation history that a
+real Cursor request also carries. So the token totals here are not the same as
+what Cursor actually billed for a session. Treat this as "how heavy is this
+payload" evidence, not "here is our exact metered usage" evidence.
 
-In this step, we capture the token weight of the raw, unoptimized data that the customer currently feeds into Cursor (e.g., massive raw server error logs used to diagnose bugs).
+### Tokenizer accuracy
 
-### 1. Prepare the Raw File
-Save a sample of the customer's typical unoptimized payload into a dedicated baseline folder:
-`./data_before/raw_log.txt`
+* OpenAI models (gpt-4, gpt-4o, the o-series, and so on) are tokenized with the
+  matching tiktoken encoding, so those counts are exact for the given text.
+* Anthropic / Claude models have no public offline tokenizer that reproduces
+  current Claude token counts. When you request a Claude model, this tool uses an
+  OpenAI encoding (o200k_base) as a proxy and flags every such run as an estimate
+  (`is_estimate=True`). Lean on that flag when you present numbers, and prefer an
+  OpenAI model for the "exact" story.
 
-### 2. Run the Token Tracker Script
-Execute the Python tracking utility against the baseline directory:
+## Install
+
+The tool needs Python 3.8+ and the `tiktoken` package. On macOS with a Homebrew
+Python, the system interpreter is externally managed, so install into a
+virtualenv rather than the system Python:
+
 ```bash
-python token_tracker.py --path ./data_before
+python3 -m venv .venv
+source .venv/bin/activate
+pip install tiktoken
 ```
 
-### 3. Baseline Report Output
-The script processes the file using the standard `cl100k_base` tokenizer (matching GPT-4 and Claude architectures) and outputs the following telemetry:
+## Usage
 
-```text
-============================================================
-TOKEN ANALYSIS REPORT (BEFORE OPTIMIZATION)
-============================================================
-Directory/File: ./data_before
-Total Files Processed: 1
+The tool is a non-interactive CLI so it can be embedded in a repeatable process.
 
-FILE BREAKDOWN:
-------------------------------------------------------------
-File: raw_log.txt
-Size: 142.5 KB
-Tokens: 38,450 tokens
-------------------------------------------------------------
-
->>> TOTAL WORKFLOW BASELINE: 38,450 tokens
 ```
-*Financial Baseline: At an average rate of \$3.00 per million input tokens for enterprise premium models, this single context-injection costs approximately **\$0.115**.*
+python token_tracker.py --path PATH [--path PATH ...] [options]
+```
 
----
+Options:
 
-## Step 5: Capture the "After" Workflow State
+| Flag | Meaning |
+| :--- | :--- |
+| `--path`, `-p` | File or directory to analyze. Repeat to add several. |
+| `--model`, `-m` | Target model name (default `gpt-4o`). Claude models are proxied and flagged as estimates. |
+| `--label`, `-l` | Free-form label for the run, for example `before` or `after`. Written to output. |
+| `--csv FILE` | Append per-file rows to this CSV (a header is written only when the file is new). |
+| `--json FILE` | Write the full structured run to this JSON file. |
+| `--exclude GLOB` | Skip paths matching this glob. Repeatable, for example `--exclude '*.min.js'`. |
+| `--max-bytes N` | Skip files at or above N bytes (default 10 MB). |
+| `--no-recursive` | Do not descend into subdirectories. |
+| `--quiet`, `-q` | Suppress the console table (still writes CSV/JSON). |
 
-Next, we pass that exact same raw log through our product. The optimization engine compresses, structures, and strips the noise out of the payload before it gets sent to Cursor.
+### A/B example
 
-### 1. Prepare the Optimized File
-Save the optimized output from our product into a separate directory:
-`./data_after/optimized_log.txt`
+Baseline the raw payload, then measure the optimized payload into the same CSV:
 
-### 2. Run the Token Tracker Script
-Execute the Python tracking utility against the optimized directory:
 ```bash
-python token_tracker.py --path ./data_after
+python token_tracker.py --path ./data_before --label before --model gpt-4o --csv results.csv
+python token_tracker.py --path ./data_after  --label after  --model gpt-4o --csv results.csv
 ```
 
-### 3. Optimized Report Output
-The script calculates the new token footprint:
+Estimate the Claude weight of the optimized payload (clearly marked as an
+estimate) and also capture a full JSON run:
 
-```text
-============================================================
-TOKEN ANALYSIS REPORT (AFTER OPTIMIZATION)
-============================================================
-Directory/File: ./data_after
-Total Files Processed: 1
-
-FILE BREAKDOWN:
-------------------------------------------------------------
-File: optimized_log.txt
-Size: 11.2 KB
-Tokens: 2,910 tokens
-------------------------------------------------------------
-
->>> TOTAL WORKFLOW BASELINE: 2,910 tokens
+```bash
+python token_tracker.py --path ./data_after --model claude-sonnet --csv results.csv --json after.json
 ```
 
----
+## Output
 
-## Final Proof of Value (PoC Deliverable)
+### CSV (appendable, one row per file)
 
-By combining the metrics from Step 4 and Step 5, we demonstrate a mathematically auditable efficiency gain:
+Columns: `run_id`, `timestamp_utc`, `label`, `model`, `encoding`, `is_estimate`,
+`path`, `rel_path`, `size_bytes`, `tokens`, `status`, `detail`.
 
-| Metric | Before (Legacy Workflow) | After (Optimized Workflow) | Delta / Total Savings |
-| :--- | :--- | :--- | :--- |
-| **Context Payload** | 38,450 tokens | 2,910 tokens | **-92.4% Less Overhead** |
-| **Estimated Cost / Run** | ~$0.115 | ~$0.009 | **92.4% Cost Reduction** |
-| **Context Window Headroom** | Consumes ~30% of window | Consumes <3% of window | **Frees up room for deeper logic** |
+Every file that is walked produces a row, including files that were skipped, so
+nothing is dropped silently. The `status` column is one of:
 
-### Summary Conclusion
-Our product structurally slashes the customer's data overhead by **92.4%** before it ever hits the LLM context window. This ensures significantly lower operating costs, faster model execution speeds, and drastically mitigates the risk of hitting strict context window boundaries during complex troubleshooting sessions in Cursor.
+* `ok` (counted),
+* `skipped_binary` (a NUL byte was detected),
+* `skipped_large` (at or above `--max-bytes`),
+* `skipped_decode_error` (not valid UTF-8),
+* `error` (could not be read).
+
+When you aggregate the CSV, filter on `status == "ok"` before summing or
+averaging. Skipped rows carry `tokens=0`, so counting them would understate your
+per-file averages.
+
+### JSON (one run per file)
+
+A single run object with `tool_version`, `run_id`, `timestamp_utc`, `label`,
+`model`, `encoding`, `is_estimate`, the resolved `paths`, the full per-file
+`files` list, and a `summary` block (`files_counted`, `files_skipped`,
+`total_tokens`, `total_bytes`).
+
+## Offline and restricted environments (for example a customer VDI)
+
+This matters for locked-down environments. tiktoken downloads its encoding tables
+from the internet the first time an encoding is used. Where outbound traffic is
+blocked, that download fails, and the tool exits with code 3 and prints these
+steps rather than a stack trace.
+
+To run fully offline, pre-populate the tiktoken cache on a machine that has
+internet, then carry the cache into the restricted environment:
+
+```bash
+# 1) On a networked machine:
+export TIKTOKEN_CACHE_DIR=/some/dir/tiktoken_cache
+python -c "import tiktoken; tiktoken.get_encoding('o200k_base'); tiktoken.get_encoding('cl100k_base')"
+
+# 2) Copy /some/dir/tiktoken_cache into the restricted environment.
+
+# 3) There, set TIKTOKEN_CACHE_DIR to that directory before running the tool:
+export TIKTOKEN_CACHE_DIR=/path/to/copied/tiktoken_cache
+```
+
+## Exit codes
+
+| Code | Meaning |
+| :--- | :--- |
+| 0 | Success. |
+| 1 | Bad arguments, or nothing to analyze. |
+| 2 | `tiktoken` is not installed. |
+| 3 | Tokenizer data could not be loaded (offline without a populated cache). |
