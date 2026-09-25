@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# token_tracker.py test fixtures and run outputs
+results.csv
+*.json
+data_before/
+data_after/
+tiktoken_cache/
+empty_cache/
